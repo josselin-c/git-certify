@@ -1,0 +1,22 @@
+git-certify is a script for git that can be used to automate the publication
+of proof of existence of git commits using blockchain technology.
+
+To do so we create a special bitcoin transaction using bitcoin opcode OP_RETURN.
+OP_RETURN instantly mark a transaction as unspendable. It's output can hence be
+pruned from the blockchain database by nodes who need space without
+compromising their database coherency. The OP_RETURN opcode also allows up to
+80 bytes of data to be embedded in the transaction output. We use this space to
+store the git hash and a marker ('git:') to identify the type of message.
+
+Once the transaction is mined in a bitcoin block, it can be proved the git
+commit and all commits and files that makes the branch up to the certified commit
+existed at the time the block was mined.
+
+You can watch special transactions in bitcoin mainnet and testnet at: http://coinsecrets.org/
+
+Requirements
+------------
+python-bitcoinlib:
+pip install python-bitcoinlib
+
+bitcoind running as a rpc server

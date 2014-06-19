@@ -1,0 +1,142 @@
+#!/usr/bin/env python
+
+import argparse
+from base64 import b16encode
+import bitcoin
+from bitcoin.core import *
+import bitcoin.rpc
+import logging
+import os
+import sys
+import subprocess
+from subprocess import Popen, PIPE
+
+class NotEnoughFundsException(Exception):
+    pass
+
+mBTC = COIN / 1000
+
+parser = argparse.ArgumentParser(description='Use blockchain technology to '
+                                'certify document existence')
+parser.add_argument('--testnet', dest='testnet', action='store_true',
+        default=False, help='use the testnet blockchain')
+
+parser.add_argument('--rpchost', dest='rpchost', help='bitcoind address')
+parser.add_argument('--rpcport', dest='rpcport', help='rpc port')
+
+parser.add_argument('--rpcuser', dest='rpcuser', help='rpc username')
+parser.add_argument('--rpcpassword', dest='rpcpassword', help='rpc password')
+
+parser.add_argument('--fee', dest='fee', default=0.1, help='transaction fee in mBTC')
+parser.add_argument('--account', dest='account', help='bitcoin account')
+
+parser.add_argument('ref', help='The git reference to certify')
+
+def get_rev(rev):
+    command = ["git", "rev-parse", "{}".format(rev)]
+    p = Popen(command, stdout=PIPE)
+    output, err = p.communicate()
+    rc = p.returncode
+    if rc:
+        raise subprocess.CalledProcessError(rc, command, output=output)
+
+    if not output:
+        raise Exception("not enough data")
+
+    output = output.strip().split('\n')
+
+    if len(output) > 1: # Don't know why
+        raise Exception("git rev-parse returned too much data:\n{}"\
+                .format(output))
+
+    return output[0].strip()
+
+def get_config(key, cast=str):
+	ret = os.popen("git config {}".format(key)).readlines()
+        if not ret:
+            return None
+        if len(ret) > 1:
+            raise Exception("Can't read config, too much lines:\n{}"\
+                    .format(ret))
+        return cast(ret[0].strip())
+
+
+def get_rpcurl(host, port, user, password):
+    if not host:
+        raise Exception("host not defined")
+    if not port: # Shoudn't happen
+        raise Exception("port not defined")
+
+    if user and password:
+        return 'http://{}:{}@{}:{}'.format(user, password, host, port)
+    elif user:
+        return 'http://{}@{}:{}'.format(user, host, port)
+
+    return 'http://{}:{}'.format(host, port)
+
+
+def parse_config(args):
+    config = {}
+    config['rpchost'] = args.rpchost or get_config('bitcoin.rpc.host')
+    config['rpcport'] = args.rpcport or get_config('bitcoin.rpc.port', int) or \
+                            18332 if args.testnet else 8332
+    config['rpcuser'] = args.rpcuser or get_config('bitcoin.rpc.user')
+    config['rpcpassword'] = args.rpcpassword or get_config('bitcoin.rpc.password')
+    config['account'] = args.account or get_config('bitcoin.account') or ''
+    config['fee'] = args.fee * mBTC
+    config['network'] = 'testnet' if args.testnet else 'mainnet'
+
+    config['rpcurl'] = get_rpcurl(config['rpchost'], config['rpcport'],
+                            config['rpcuser'], config['rpcpassword'])
+    return config
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+
+    args = parser.parse_args()
+    config = parse_config(args)
+    assert(config['fee'] <= 1 * mBTC)
+    rev = get_rev(args.ref)
+    bitcoin.SelectParams(config['network'])
+
+    proxy = bitcoin.rpc.Proxy(config['rpcurl'])
+    unspent = proxy.listunspent(minconf=6)
+
+    if config['account']:
+        unspent = [u for u in unspent if 'account' in u and u['account'] == config['account']]
+
+    unspent = [u for u in unspent if u['amount'] >= config['fee']]
+
+    if not unspent:
+        logging.error("Not enough funds in account {}!"\
+                .format(config.get('account', 'default')))
+        sys.exit(1)
+
+    unspent = unspent[0]
+
+    txout = []
+    vins = [CTxIn(unspent['outpoint'])]
+
+    msg_out = CTxOut(0, CScript([script.OP_RETURN, 'git:' + rev.decode('hex')]))
+    txout.append(msg_out)
+
+    if unspent['amount'] > config['fee']:
+        change_out = CTxOut(unspent['amount'] - config['fee'],
+                proxy.getnewaddress(config['account']).to_scriptPubKey())
+        txout.append(change_out)
+
+    tx = CTransaction(vins, txout)
+    r = proxy.signrawtransaction(tx)
+
+    if r['complete']:
+        ret = proxy.sendrawtransaction(r['tx'])
+        ret = b16encode(ret).lower()
+        logging.info("transaction sent: {}".format(ret))
+    else:
+        logging.error('Failed to send transaction!')
+        sys.exit(1)
+
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main()
