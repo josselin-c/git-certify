@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import argparse
-from base64 import b16encode
 import bitcoin
 from bitcoin.core import *
 import bitcoin.rpc
@@ -139,8 +138,7 @@ def main():
 
     if r['complete']:
         ret = proxy.sendrawtransaction(r['tx'])
-        ret = b16encode(ret).lower()
-        print("transaction sent: {}".format(ret))
+        print("transaction sent: {}".format(b2lx(ret)))
     else:
         logging.error('Failed to send transaction!')
         sys.exit(1)
